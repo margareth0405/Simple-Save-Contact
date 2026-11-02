@@ -1,82 +1,26 @@
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "contacthub_demo_contacts_v1";
-  const CATEGORIES = ["Family", "Friends", "Work", "Others"];
-  let memoryContacts = [];
-  let storageAvailable = true;
-  let pendingDeleteId = null;
-
   const byId = (id) => document.getElementById(id);
+  let currentContacts = [];
+  let pendingDeleteId = null;
+  let listRequestNumber = 0;
+  let searchTimer = null;
 
-  function localDate(daysAgo) {
-    const date = new Date();
-    date.setHours(12, 0, 0, 0);
-    date.setDate(date.getDate() - daysAgo);
-    return date.toISOString();
-  }
-
-  function sampleContacts() {
-    return [
-      { id: "CH-1001", fullName: "Mia Santos", email: "mia.santos@example.com", phone: "+63 917 555 0101", category: "Friends", address: "Quezon City", notes: "Fictional sample contact.", addedAt: localDate(0) },
-      { id: "CH-1002", fullName: "Noah Reyes", email: "noah.reyes@example.com", phone: "+63 918 555 0102", category: "Work", address: "Makati City", notes: "Fictional project teammate.", addedAt: localDate(0) },
-      { id: "CH-1003", fullName: "Ava Mendoza", email: "ava.mendoza@example.com", phone: "+63 919 555 0103", category: "Family", address: "Pasig City", notes: "Fictional sample contact.", addedAt: localDate(1) },
-      { id: "CH-1004", fullName: "Liam Garcia", email: "liam.garcia@example.com", phone: "+63 920 555 0104", category: "Others", address: "Manila", notes: "Fictional community contact.", addedAt: localDate(3) },
-      { id: "CH-1005", fullName: "Sofia Cruz", email: "sofia.cruz@example.com", phone: "+63 921 555 0105", category: "Work", address: "Taguig City", notes: "Fictional professional contact.", addedAt: localDate(5) }
-    ];
-  }
-
-  function readContacts() {
-    if (!storageAvailable) return [...memoryContacts];
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        const seeded = sampleContacts();
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
-        return seeded;
-      }
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error("Saved contact data is invalid.");
-      return parsed.filter(isContactShape);
-    } catch (error) {
-      storageAvailable = false;
-      memoryContacts = sampleContacts();
-      updateStorageNotice();
-      return [...memoryContacts];
+  async function apiRequest(url, options = {}) {
+    const headers = { Accept: "application/json", ...(options.headers || {}) };
+    if (options.body) headers["Content-Type"] = "application/json";
+    if (options.method && options.method !== "GET") {
+      headers["X-CSRF-Token"] = document.querySelector('meta[name="csrf-token"]').content;
     }
-  }
-
-  function writeContacts(contacts) {
-    memoryContacts = [...contacts];
-    if (!storageAvailable) return true;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-      return true;
-    } catch (error) {
-      storageAvailable = false;
-      updateStorageNotice();
-      showToast("Browser storage is unavailable. Changes will last only until this page is refreshed.", "error");
-      return true;
+    const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
+    const data = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || `Request failed (${response.status}).`);
+      error.fields = data?.fields || {};
+      throw error;
     }
-  }
-
-  function isContactShape(contact) {
-    return contact && typeof contact.id === "string" && typeof contact.fullName === "string" &&
-      typeof contact.email === "string" && typeof contact.phone === "string" &&
-      CATEGORIES.includes(contact.category) && typeof contact.addedAt === "string";
-  }
-
-  function updateStorageNotice() {
-    const notice = byId("storageNotice");
-    if (!notice || storageAvailable) return;
-    const text = notice.querySelector("div");
-    if (text) text.textContent = "Browser storage is unavailable. ContactHub is using temporary in-memory demo data for this tab only.";
-  }
-
-  function todayKey(dateValue) {
-    const date = dateValue ? new Date(dateValue) : new Date();
-    if (Number.isNaN(date.getTime())) return "";
-    return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+    return data;
   }
 
   function formatDate(dateValue) {
@@ -89,10 +33,10 @@
     return name.trim().split(/\s+/).slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join("") || "?";
   }
 
-  function createCell(text, className) {
+  function createCell(value, className) {
     const cell = document.createElement("td");
     if (className) cell.className = className;
-    cell.textContent = text;
+    cell.textContent = value;
     return cell;
   }
 
@@ -125,72 +69,29 @@
     return badge;
   }
 
-  function renderDashboard() {
+  async function renderDashboard() {
     if (document.body.dataset.page !== "dashboard") return;
-    const contacts = readContacts().sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
-    byId("totalContacts").textContent = String(contacts.length);
-    const today = todayKey();
-    byId("todayContacts").textContent = String(contacts.filter((contact) => todayKey(contact.addedAt) === today).length);
-
-    const body = byId("recentContactsBody");
-    const empty = byId("recentEmpty");
-    body.replaceChildren();
-    contacts.slice(0, 5).forEach((contact) => {
-      const row = document.createElement("tr");
-      const personCell = document.createElement("td");
-      personCell.appendChild(createPerson(contact, true));
-      const categoryCell = document.createElement("td");
-      categoryCell.appendChild(createCategory(contact.category));
-      row.append(personCell, createCell(contact.phone), categoryCell, createCell(formatDate(contact.addedAt)));
-      body.appendChild(row);
-    });
-    const isEmpty = contacts.length === 0;
-    body.closest(".table-responsive").classList.toggle("d-none", isEmpty);
-    empty.classList.toggle("d-none", !isEmpty);
-  }
-
-  function filteredContacts() {
-    const query = (byId("contactSearch")?.value || "").trim().toLocaleLowerCase();
-    const category = byId("categoryFilter")?.value || "";
-    return readContacts()
-      .filter((contact) => !category || contact.category === category)
-      .filter((contact) => !query || [contact.fullName, contact.email, contact.phone].some((value) => value.toLocaleLowerCase().includes(query)))
-      .sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
-  }
-
-  function renderContacts() {
-    if (document.body.dataset.page !== "contacts") return;
-    const contacts = filteredContacts();
-    const allContacts = readContacts();
-    const body = byId("contactsTableBody");
-    const tableWrap = byId("contactsTableWrap");
-    const empty = byId("contactsEmpty");
-    body.replaceChildren();
-
-    contacts.forEach((contact) => {
-      const row = document.createElement("tr");
-      row.appendChild(createCell(contact.id, "contact-id"));
-      const personCell = document.createElement("td");
-      personCell.appendChild(createPerson(contact, false));
-      row.appendChild(personCell);
-      row.appendChild(createCell(contact.email));
-      row.appendChild(createCell(contact.phone));
-      const categoryCell = document.createElement("td");
-      categoryCell.appendChild(createCategory(contact.category));
-      row.appendChild(categoryCell);
-      row.appendChild(createCell(formatDate(contact.addedAt)));
-      row.appendChild(createActionCell(contact));
-      body.appendChild(row);
-    });
-
-    const noResults = contacts.length === 0;
-    tableWrap.classList.toggle("d-none", noResults);
-    empty.classList.toggle("d-none", !noResults);
-    const filtering = Boolean(byId("contactSearch").value.trim() || byId("categoryFilter").value);
-    byId("emptyTitle").textContent = filtering ? "No matching contacts" : "No contacts available";
-    byId("emptyMessage").textContent = filtering ? "Try changing your search or category filter." : "Add a fictional contact to begin building your directory.";
-    byId("emptyAddButton").classList.toggle("d-none", filtering);
-    byId("resultsSummary").textContent = filtering ? `Showing ${contacts.length} of ${allContacts.length} contacts` : `Showing ${contacts.length} ${contacts.length === 1 ? "contact" : "contacts"}`;
+    try {
+      const data = await apiRequest("/api/stats");
+      byId("totalContacts").textContent = String(data.total);
+      byId("todayContacts").textContent = String(data.addedToday);
+      const body = byId("recentContactsBody");
+      body.replaceChildren();
+      data.recent.forEach((contact) => {
+        const row = document.createElement("tr");
+        const personCell = document.createElement("td");
+        personCell.appendChild(createPerson(contact, true));
+        const categoryCell = document.createElement("td");
+        categoryCell.appendChild(createCategory(contact.category));
+        row.append(personCell, createCell(contact.phone), categoryCell, createCell(formatDate(contact.addedAt)));
+        body.appendChild(row);
+      });
+      const isEmpty = data.recent.length === 0;
+      body.closest(".table-responsive").classList.toggle("d-none", isEmpty);
+      byId("recentEmpty").classList.toggle("d-none", !isEmpty);
+    } catch (error) {
+      showToast(`Could not load dashboard: ${error.message}`, "error");
+    }
   }
 
   function createActionCell(contact) {
@@ -217,6 +118,51 @@
     return button;
   }
 
+  async function renderContacts() {
+    if (document.body.dataset.page !== "contacts") return;
+    const requestNumber = ++listRequestNumber;
+    const search = byId("contactSearch").value.trim();
+    const category = byId("categoryFilter").value;
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (category) params.set("category", category);
+    try {
+      const data = await apiRequest(`/api/contacts${params.size ? `?${params}` : ""}`);
+      if (requestNumber !== listRequestNumber) return;
+      currentContacts = data.contacts;
+      const body = byId("contactsTableBody");
+      body.replaceChildren();
+      currentContacts.forEach((contact) => {
+        const row = document.createElement("tr");
+        row.appendChild(createCell(contact.id, "contact-id"));
+        const personCell = document.createElement("td");
+        personCell.appendChild(createPerson(contact, false));
+        row.appendChild(personCell);
+        row.appendChild(createCell(contact.email));
+        row.appendChild(createCell(contact.phone));
+        const categoryCell = document.createElement("td");
+        categoryCell.appendChild(createCategory(contact.category));
+        row.appendChild(categoryCell);
+        row.appendChild(createCell(formatDate(contact.addedAt)));
+        row.appendChild(createActionCell(contact));
+        body.appendChild(row);
+      });
+
+      const noResults = currentContacts.length === 0;
+      byId("contactsTableWrap").classList.toggle("d-none", noResults);
+      byId("contactsEmpty").classList.toggle("d-none", !noResults);
+      const filtering = Boolean(search || category);
+      byId("emptyTitle").textContent = filtering ? "No matching contacts" : "No contacts available";
+      byId("emptyMessage").textContent = filtering ? "Try changing your search or category filter." : "Add a fictional contact to begin building your directory.";
+      byId("emptyAddButton").classList.toggle("d-none", filtering);
+      byId("resultsSummary").textContent = filtering
+        ? `Showing ${currentContacts.length} of ${data.total} contacts`
+        : `Showing ${currentContacts.length} ${currentContacts.length === 1 ? "contact" : "contacts"}`;
+    } catch (error) {
+      if (requestNumber === listRequestNumber) showToast(`Could not load contacts: ${error.message}`, "error");
+    }
+  }
+
   function bootstrapModal(id) {
     if (!window.bootstrap) {
       showToast("Bootstrap did not load. Connect to the internet and refresh the page.", "error");
@@ -225,11 +171,18 @@
     return window.bootstrap.Modal.getOrCreateInstance(byId(id));
   }
 
+  function clearFormErrors() {
+    const form = byId("contactForm");
+    form.classList.remove("was-validated");
+    form.querySelectorAll(".is-invalid").forEach((field) => field.classList.remove("is-invalid"));
+    form.querySelectorAll("input, select, textarea").forEach((field) => field.setCustomValidity(""));
+    byId("formError").classList.add("d-none");
+  }
+
   function openContactForm(contact) {
     const form = byId("contactForm");
     form.reset();
-    form.classList.remove("was-validated");
-    byId("formError").classList.add("d-none");
+    clearFormErrors();
     const editing = Boolean(contact);
     byId("contactModalKicker").textContent = editing ? "UPDATE CONTACT" : "NEW CONTACT";
     byId("contactModalTitle").textContent = editing ? "Edit Contact" : "Add Contact";
@@ -246,7 +199,7 @@
   }
 
   function validPhone(value) {
-    if (!/^[+()\-\s\d]+$/.test(value)) return false;
+    if (!/^[+() 0-9-]+$/.test(value)) return false;
     const digits = value.replace(/\D/g, "");
     return digits.length >= 7 && digits.length <= 15;
   }
@@ -261,47 +214,55 @@
     return form.checkValidity();
   }
 
-  function generateId(contacts) {
-    const used = new Set(contacts.map((contact) => contact.id));
-    const highest = contacts.reduce((max, contact) => {
-      const match = /^CH-(\d+)$/.exec(contact.id);
-      return match ? Math.max(max, Number(match[1])) : max;
-    }, 1000);
-    let number = highest + 1;
-    while (used.has(`CH-${number}`)) number += 1;
-    return `CH-${number}`;
+  function displayFormError(error) {
+    const fieldMessages = Object.entries(error.fields || {});
+    fieldMessages.forEach(([field, message]) => {
+      const input = byId(field);
+      if (input) {
+        input.classList.add("is-invalid");
+        input.setCustomValidity(message);
+      }
+    });
+    const alert = byId("formError");
+    alert.textContent = fieldMessages.length
+      ? `${error.message} ${fieldMessages.map(([field, message]) => `${field}: ${message}`).join(" ")}`
+      : error.message;
+    alert.classList.remove("d-none");
+    alert.focus();
   }
 
-  function saveContact(event) {
+  async function saveContact(event) {
     event.preventDefault();
+    clearFormErrors();
     if (!validateForm()) {
-      const error = byId("formError");
-      error.textContent = "Please correct the highlighted fields before saving.";
-      error.classList.remove("d-none");
-      error.focus();
+      displayFormError(new Error("Please correct the highlighted fields before saving."));
       return;
     }
 
-    const contacts = readContacts();
     const id = byId("contactId").value;
-    const existingIndex = contacts.findIndex((contact) => contact.id === id);
     const contact = {
-      id: existingIndex >= 0 ? id : generateId(contacts),
       fullName: byId("fullName").value.trim(),
       email: byId("email").value.trim(),
       phone: byId("phone").value.trim(),
       category: byId("category").value,
       address: byId("address").value.trim(),
-      notes: byId("notes").value.trim(),
-      addedAt: existingIndex >= 0 ? contacts[existingIndex].addedAt : new Date().toISOString()
+      notes: byId("notes").value.trim()
     };
-
-    if (existingIndex >= 0) contacts[existingIndex] = contact;
-    else contacts.push(contact);
-    writeContacts(contacts);
-    bootstrapModal("contactModal")?.hide();
-    renderContacts();
-    showToast(existingIndex >= 0 ? "Contact updated successfully." : "Contact added successfully.", "success");
+    const saveButton = byId("saveContactButton");
+    saveButton.disabled = true;
+    try {
+      await apiRequest(id ? `/api/contacts/${encodeURIComponent(id)}` : "/api/contacts", {
+        method: id ? "PUT" : "POST",
+        body: JSON.stringify(contact)
+      });
+      bootstrapModal("contactModal")?.hide();
+      await renderContacts();
+      showToast(id ? "Contact updated successfully." : "Contact added successfully.", "success");
+    } catch (error) {
+      displayFormError(error);
+    } finally {
+      saveButton.disabled = false;
+    }
   }
 
   function openDelete(contact) {
@@ -310,15 +271,23 @@
     bootstrapModal("deleteModal")?.show();
   }
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (!pendingDeleteId) return;
-    const contacts = readContacts();
-    const contact = contacts.find((item) => item.id === pendingDeleteId);
-    writeContacts(contacts.filter((item) => item.id !== pendingDeleteId));
-    pendingDeleteId = null;
-    bootstrapModal("deleteModal")?.hide();
-    renderContacts();
-    showToast(contact ? `${contact.fullName} was deleted.` : "Contact deleted.", "success");
+    const id = pendingDeleteId;
+    const contact = currentContacts.find((item) => item.id === id);
+    const button = byId("confirmDeleteButton");
+    button.disabled = true;
+    try {
+      await apiRequest(`/api/contacts/${encodeURIComponent(id)}`, { method: "DELETE" });
+      pendingDeleteId = null;
+      bootstrapModal("deleteModal")?.hide();
+      await renderContacts();
+      showToast(contact ? `${contact.fullName} was deleted.` : "Contact deleted.", "success");
+    } catch (error) {
+      showToast(`Could not delete contact: ${error.message}`, "error");
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function showToast(message, type) {
@@ -350,34 +319,40 @@
     if (notes && count) count.textContent = String(notes.value.length);
   }
 
-  function restoreSamples() {
-    writeContacts(sampleContacts());
-    byId("contactSearch").value = "";
-    byId("categoryFilter").value = "";
-    renderContacts();
-    showToast("Fictional sample contacts restored.", "success");
-  }
-
   function initializeContactsPage() {
     if (document.body.dataset.page !== "contacts") return;
     byId("addContactButton").addEventListener("click", () => openContactForm(null));
     byId("emptyAddButton").addEventListener("click", () => openContactForm(null));
-    byId("contactSearch").addEventListener("input", renderContacts);
+    byId("contactSearch").addEventListener("input", () => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(renderContacts, 200);
+    });
     byId("categoryFilter").addEventListener("change", renderContacts);
-    byId("resetDemoButton").addEventListener("click", restoreSamples);
     byId("contactForm").addEventListener("submit", saveContact);
+    byId("contactForm").addEventListener("input", (event) => {
+      if (event.target.matches("input, select, textarea")) {
+        event.target.setCustomValidity("");
+        event.target.classList.remove("is-invalid");
+      }
+    });
     byId("notes").addEventListener("input", updateNotesCount);
     byId("confirmDeleteButton").addEventListener("click", confirmDelete);
-    byId("contactsTableBody").addEventListener("click", (event) => {
+    byId("contactsTableBody").addEventListener("click", async (event) => {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
-      const contact = readContacts().find((item) => item.id === button.dataset.contactId);
-      if (!contact) {
-        showToast("That contact could not be found. Refresh and try again.", "error");
-        return;
+      const id = button.dataset.contactId;
+      if (button.dataset.action === "edit") {
+        try {
+          const data = await apiRequest(`/api/contacts/${encodeURIComponent(id)}`);
+          openContactForm(data.contact);
+        } catch (error) {
+          showToast(`Could not load contact: ${error.message}`, "error");
+        }
       }
-      if (button.dataset.action === "edit") openContactForm(contact);
-      if (button.dataset.action === "delete") openDelete(contact);
+      if (button.dataset.action === "delete") {
+        const contact = currentContacts.find((item) => item.id === id);
+        if (contact) openDelete(contact);
+      }
     });
     byId("deleteModal").addEventListener("hidden.bs.modal", () => { pendingDeleteId = null; });
     renderContacts();
@@ -385,8 +360,6 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    readContacts();
-    updateStorageNotice();
     renderDashboard();
     initializeContactsPage();
   });

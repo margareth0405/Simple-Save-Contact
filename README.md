@@ -1,71 +1,78 @@
-# ContactHub — Phase 1 Frontend
+# ContactHub — Flask and SQLite
 
-ContactHub is a responsive contact management frontend for the ITP16 Final Requirement. This phase demonstrates contact CRUD, search, category filtering, dashboard statistics, form validation, and confirmation dialogs entirely in the browser.
+ContactHub is a responsive contact management system for the ITP16 Final Requirement. The existing Bootstrap 5 dashboard and contact manager now use a Flask JSON API backed by SQLite. Contacts remain available after browser refreshes and are shared by visitors to the same server.
 
-> **Demo data only:** Phase 1 uses browser `localStorage` as temporary demonstration storage. It is not the final database. Use only fictional contact details while testing.
+**Use fictional contacts for this school demonstration.** The project does not yet have user accounts or per-user access control. Anyone who can reach a publicly deployed instance can view and change its contacts. Add authentication and HTTPS before using real personal information.
 
-## Technology
+## Local setup
 
-- HTML5
-- CSS3
-- Bootstrap 5.3
-- Vanilla JavaScript
-- Browser `localStorage` (temporary Phase 1 storage)
-
-No Flask backend, SQLite database, Gunicorn, Nginx, or AWS resources are included in this phase.
-
-## Preview locally
-
-The quickest option is to double-click `index.html`. It redirects to the static dashboard preview.
-
-For a more realistic local web-server preview, open PowerShell in the `contacthub` folder and run:
+From the `contacthub` directory in PowerShell:
 
 ```powershell
-python -m http.server 8000
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m flask --app app init-db
+python -m flask --app app seed-demo
+python -m flask --app app run
 ```
 
-Then open <http://localhost:8000> in a browser. An internet connection is needed to load Bootstrap from its CDN.
+Open <http://127.0.0.1:5000/>. `seed-demo` is optional; it inserts five fictional sample contacts only when the table is empty. Do not double-click a template or use `python -m http.server`: Flask now renders the pages and handles all data requests. An internet connection is needed for the Bootstrap CDN assets.
 
-## Features to test
+The local SQLite file is `instance/contacthub.sqlite3` by default. Set `CONTACTHUB_DATABASE` to an absolute path to use a different file. The database and local environment files are ignored by Git.
 
-1. Open the dashboard and confirm the total and today's contact counts.
-2. Select **Manage Contacts** or the **Contacts** navigation link.
-3. Search by name, email, or phone number.
-4. Filter contacts by Family, Friends, Work, or Others.
-5. Add a fictional contact and verify form validation.
-6. Edit an existing contact and confirm that its current values appear in the form.
-7. Delete a contact using the confirmation modal.
-8. Refresh the page and confirm the changes remain in the same browser.
-9. Select **Restore sample contacts** to reset the demo dataset.
+## Features
 
-## Project structure
+- Dashboard totals, today's additions, and five newest contacts from SQLite
+- Contact creation, listing, editing, and deletion with confirmation
+- Search by name, email, or phone, plus category filtering
+- Browser and server-side validation with field-specific errors
+- Unique `CH-1001` style display IDs generated from SQLite primary keys
+- CSRF checks for create, update, and delete requests
+- Responsive Bootstrap layout and safe text rendering
+
+## Test
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The tests use separate temporary SQLite files and cover CRUD, persistence, search/filtering, validation failures, unique IDs, CSRF, templates, and optional demo seeding. They do not modify the local preview database.
+
+## Structure
 
 ```text
 contacthub/
-├── index.html                  # Static preview entry point
+├── app.py                       Flask app, validation, routes, and CLI commands
+├── schema.sql                   SQLite table and indexes
+├── requirements.txt             Python dependencies
+├── .env.example                 EC2 service environment template
 ├── templates/
-│   ├── base.html               # Flask/Jinja base layout scaffold for Phase 2
-│   ├── dashboard.html          # Standalone Phase 1 dashboard preview
-│   └── contacts.html           # Standalone Phase 1 contact manager
+│   ├── base.html                Shared Jinja layout
+│   ├── dashboard.html           Dashboard page
+│   └── contacts.html            Contact manager and modals
 ├── static/
-│   ├── css/style.css           # Responsive visual system
-│   └── js/app.js               # Demo CRUD, validation, search, filter, and stats
+│   ├── css/style.css            Responsive styling
+│   └── js/app.js                API calls and page interactions
+├── tests/test_app.py            Flask and SQLite integration tests
+├── deploy/                      systemd and Nginx example configurations
+├── DEPLOY_EC2.md                Ubuntu EC2 runbook
 └── README.md
 ```
 
-`dashboard.html` and `contacts.html` are intentionally standalone so Phase 1 can be previewed without Flask. `base.html` establishes the future Jinja layout. In Phase 2, the two page templates will extend `base.html` to remove repeated navigation and footer markup.
+## API and database
 
-## Phase 2 integration plan
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/stats` | Dashboard counts and recent contacts |
+| `GET` | `/api/contacts` | List contacts; optional `search` and `category` query parameters |
+| `GET` | `/api/contacts/<id>` | Get one contact for editing |
+| `POST` | `/api/contacts` | Create a contact |
+| `PUT` | `/api/contacts/<id>` | Update a contact |
+| `DELETE` | `/api/contacts/<id>` | Delete a contact |
 
-The existing form fields and contact object map directly to an SQLite `contacts` table: `id`, `full_name`, `email`, `phone`, `category`, `address`, `notes`, and `date_added`.
+Write requests send JSON and the `X-CSRF-Token` header from the rendered page. The schema stores an integer primary key, full name, email, phone, category, optional address and notes, and the UTC creation timestamp. Public display IDs are derived from the integer key; SQLite `AUTOINCREMENT` prevents reuse after deletion. The dashboard's "added today" count uses `CONTACTHUB_TIME_ZONE` (default `Asia/Manila`).
 
-The Flask integration will:
+## EC2 readiness
 
-- Add routes for the dashboard, contact list, create, update, delete, search, and filter operations.
-- Replace `readContacts()` and `writeContacts()` in `app.js` with Flask-rendered data or `fetch()` requests to JSON endpoints.
-- Perform all validation again on the server, even though browser validation remains for usability.
-- Store records in SQLite and generate IDs in the database/service layer.
-- Use Jinja template inheritance through `base.html` and Flask `url_for()` paths.
-- Add CSRF protection, database error handling, and automated CRUD tests.
-
-Phase 3 deployment to EC2 should begin only after the Flask/SQLite implementation and tests are complete.
+The project includes a Gunicorn systemd unit, an Nginx reverse proxy configuration, a private environment-file template, and step-by-step instructions in [DEPLOY_EC2.md](DEPLOY_EC2.md). AWS deployment has not been performed or verified from this workspace.

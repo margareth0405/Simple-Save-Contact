@@ -1,6 +1,6 @@
 # ContactHub EC2 deployment guide
 
-These files prepare an Ubuntu EC2 host for ContactHub. They do not create an EC2 instance or publish this project automatically. Phase 3 has not started. The example Nginx configuration serves a public-IP HTTP **demonstration**. It should contain fictional contacts only. Administrator sign-in protects changes, but visitors can read the directory; add HTTPS and a suitable privacy policy before storing real personal information.
+These files prepare an Ubuntu EC2 host for ContactHub. They do not create an EC2 instance or publish this project automatically. Phase 3 has not started. The example Nginx configuration serves a public-IP HTTP **demonstration**. It should contain fictional contacts only. Administrator sign-in protects changes, but visitors can read the directory. HTTP also exposes the administrator password in transit; configure HTTPS before public sign-in and never reuse an important password for a temporary HTTP demo.
 
 ## 1. Prepare the instance
 

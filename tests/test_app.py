@@ -141,6 +141,7 @@ class ContactHubTests(unittest.TestCase):
             ({**VALID_CONTACT, "phone": "123"}, "phone"),
             ({**VALID_CONTACT, "phone": "123\n4567890"}, "phone"),
             ({**VALID_CONTACT, "category": "Unknown"}, "category"),
+            ({**VALID_CONTACT, "category": 999}, "category"),
             ({**VALID_CONTACT, "notes": "x" * 501}, "notes"),
             ({**VALID_CONTACT, "fullName": 42}, "fullName"),
             ({"fullName": "Only Name"}, "email"),
@@ -173,6 +174,51 @@ class ContactHubTests(unittest.TestCase):
         second = runner.invoke(args=["seed-demo"])
         self.assertIn("Added 0", second.output)
         self.assertEqual(self.client.get("/api/contacts").json["total"], 5)
+
+    def test_repeated_create_returns_conflict_without_duplicate_record(self):
+        first = self.write("POST", "/api/contacts", VALID_CONTACT)
+        second = self.write("POST", "/api/contacts", VALID_CONTACT)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json["error"], "This contact already exists.")
+        self.assertEqual(self.client.get("/api/contacts").json["total"], 1)
+
+    def test_malformed_requests_and_unsupported_methods_are_json_errors(self):
+        malformed = self.client.post(
+            "/api/contacts", data="{not json", content_type="application/json",
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(malformed.status_code, 400)
+        self.assertEqual(malformed.mimetype, "application/json")
+        self.assertEqual(self.client.post(
+            "/api/contacts", json=[], headers={"X-CSRF-Token": self.csrf},
+        ).status_code, 422)
+        unsupported = self.client.patch("/api/contacts", json=VALID_CONTACT, headers={"X-CSRF-Token": self.csrf})
+        self.assertEqual(unsupported.status_code, 405)
+        self.assertEqual(unsupported.mimetype, "application/json")
+        self.assertEqual(self.client.get("/api/contacts/CH-9999").status_code, 404)
+        self.assertEqual(self.client.get("/api/contacts").json["total"], 0)
+
+    def test_sql_injection_like_search_remains_literal(self):
+        self.assertEqual(self.write("POST", "/api/contacts", VALID_CONTACT).status_code, 201)
+        result = self.client.get("/api/contacts", query_string={"search": "' OR 1=1 --"})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json["contacts"], [])
+        self.assertEqual(result.json["total"], 1)
+
+    def test_database_connection_error_returns_generic_json(self):
+        broken = create_app({
+            "TESTING": True,
+            "DATABASE": self.temp_dir.name,
+            "SECRET_KEY": "test-only-secret",
+            "ADMIN_PASSWORD_HASH": generate_password_hash("testing-password-123"),
+        })
+        with self.assertLogs(broken.logger, level="ERROR"):
+            response = broken.test_client().get("/api/contacts")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.mimetype, "application/json")
+        self.assertNotIn(self.temp_dir.name, response.get_data(as_text=True))
+        self.assertNotIn("Traceback", response.get_data(as_text=True))
 
 
 if __name__ == "__main__":

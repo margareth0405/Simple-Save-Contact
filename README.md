@@ -89,7 +89,7 @@ You can also use a VS Code SQLite extension that can open a local `.db` file and
 python -m unittest discover -s tests -v
 ```
 
-The 17 automated tests use disposable SQLite files. They cover schema creation, foreign keys and restricted category deletion, legacy migration, repeatable seeding, password hashing, login and logout, CSRF, complete contact CRUD, validation, search, category filtering, dashboard statistics, and persistence across a new Flask app instance. They do not modify `instance/contacthub.db`.
+The 22 automated tests use disposable SQLite files. They cover schema creation, foreign keys and restricted category deletion, legacy migration, repeatable seeding, password hashing, login and logout, CSRF, complete contact CRUD, duplicate submissions, malformed requests, database failures, validation, search, category filtering, dashboard statistics, and persistence across a new Flask app instance. They do not modify `instance/contacthub.db`.
 
 ## Troubleshooting
 

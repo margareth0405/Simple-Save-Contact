@@ -123,6 +123,14 @@ class ContactAccessTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 302)
 
+    def test_production_configuration_disables_debug_and_secures_session_cookie(self):
+        with patch.dict(os.environ, {"CONTACTHUB_ENV": "production", "CONTACTHUB_SECURE_COOKIE": "true"}):
+            production_app = create_app(self.config)
+        self.assertFalse(production_app.debug)
+        self.assertTrue(production_app.config["SESSION_COOKIE_HTTPONLY"])
+        self.assertTrue(production_app.config["SESSION_COOKIE_SECURE"])
+        self.assertEqual(production_app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+
 
 if __name__ == "__main__":
     unittest.main()

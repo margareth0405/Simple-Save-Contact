@@ -42,6 +42,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     secure_cookie = os.environ.get("CONTACTHUB_SECURE_COOKIE")
     app.config.update(
         DATABASE=str(resolve_database_path()),
+        DEBUG=False,
         SECRET_KEY=secret_key or secrets.token_hex(32),
         ADMIN_PASSWORD_HASH=admin_hash or "",
         SESSION_COOKIE_HTTPONLY=True,
@@ -118,6 +119,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.errorhandler(401)
     @app.errorhandler(403)
     @app.errorhandler(404)
+    @app.errorhandler(405)
     @app.errorhandler(413)
     def api_error(error):
         if request.path.startswith("/api/"):
@@ -249,7 +251,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     def request_contact_data() -> tuple[dict, dict]:
         if not request.is_json:
             abort(400, description="Send JSON with Content-Type: application/json.")
-        return validate_contact(request.get_json(silent=True))
+        data = request.get_json(silent=True)
+        if data is None:
+            abort(400, description="Send a valid JSON object.")
+        return validate_contact(data)
 
     @app.get("/api/categories")
     def list_categories():
@@ -289,6 +294,15 @@ def create_app(test_config: dict | None = None) -> Flask:
         if errors:
             return jsonify(error="Please correct the contact fields.", fields=errors), 422
         db = get_db()
+        db.execute("BEGIN IMMEDIATE")
+        duplicate = db.execute(
+            """SELECT 1 FROM contacts
+               WHERE lower(full_name) = lower(?) AND lower(email) = lower(?) AND phone = ? LIMIT 1""",
+            (values["fullName"], values["email"], values["phone"]),
+        ).fetchone()
+        if duplicate:
+            db.rollback()
+            return jsonify(error="This contact already exists."), 409
         now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         cursor = db.execute(
             """INSERT INTO contacts

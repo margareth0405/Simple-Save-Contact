@@ -2,6 +2,8 @@
   "use strict";
 
   const byId = (id) => document.getElementById(id);
+  const isAdmin = document.body.dataset.isAdmin === "true";
+  const loginUrl = document.body.dataset.loginUrl;
   let currentContacts = [];
   let pendingDeleteId = null;
   let listRequestNumber = 0;
@@ -18,6 +20,8 @@
     if (!response.ok) {
       const error = new Error(data?.error || `Request failed (${response.status}).`);
       error.fields = data?.fields || {};
+      error.status = response.status;
+      if (response.status === 401) window.location.assign(loginUrl);
       throw error;
     }
     return data;
@@ -72,9 +76,28 @@
   async function renderDashboard() {
     if (document.body.dataset.page !== "dashboard") return;
     try {
-      const data = await apiRequest("/api/stats");
+      const data = await apiRequest("/api/dashboard/stats");
       byId("totalContacts").textContent = String(data.total);
       byId("todayContacts").textContent = String(data.addedToday);
+      const categories = byId("categoryStats");
+      categories.replaceChildren();
+      data.categoryCounts.forEach((category) => {
+        const column = document.createElement("div");
+        column.className = "col-6 col-lg-3";
+        const card = document.createElement("div");
+        card.className = "stat-card h-100";
+        const content = document.createElement("div");
+        const label = document.createElement("p");
+        label.className = "stat-label";
+        label.textContent = category.name;
+        const count = document.createElement("p");
+        count.className = "stat-value mb-0";
+        count.textContent = String(category.count);
+        content.append(label, count);
+        card.appendChild(content);
+        column.appendChild(card);
+        categories.appendChild(column);
+      });
       const body = byId("recentContactsBody");
       body.replaceChildren();
       data.recent.forEach((contact) => {
@@ -97,6 +120,14 @@
   function createActionCell(contact) {
     const cell = document.createElement("td");
     cell.className = "text-end";
+    if (!isAdmin) {
+      const link = document.createElement("a");
+      link.href = document.body.dataset.manageLoginUrl;
+      link.className = "stat-link";
+      link.textContent = "Sign in to manage";
+      cell.appendChild(link);
+      return cell;
+    }
     const group = document.createElement("div");
     group.className = "action-group";
     group.append(
@@ -180,6 +211,10 @@
   }
 
   function openContactForm(contact) {
+    if (!isAdmin) {
+      window.location.assign(loginUrl);
+      return;
+    }
     const form = byId("contactForm");
     form.reset();
     clearFormErrors();
@@ -319,7 +354,21 @@
     if (notes && count) count.textContent = String(notes.value.length);
   }
 
-  function initializeContactsPage() {
+  async function loadCategories() {
+    try {
+      const data = await apiRequest("/api/categories");
+      for (const [id, label] of [["categoryFilter", "All categories"], ["category", "Choose a category"]]) {
+        const select = byId(id);
+        const placeholder = new Option(label, "");
+        select.replaceChildren(placeholder);
+        data.categories.forEach((category) => select.add(new Option(category.name, category.name)));
+      }
+    } catch (error) {
+      showToast(`Could not load categories: ${error.message}`, "error");
+    }
+  }
+
+  async function initializeContactsPage() {
     if (document.body.dataset.page !== "contacts") return;
     byId("addContactButton").addEventListener("click", () => openContactForm(null));
     byId("emptyAddButton").addEventListener("click", () => openContactForm(null));
@@ -355,7 +404,8 @@
       }
     });
     byId("deleteModal").addEventListener("hidden.bs.modal", () => { pendingDeleteId = null; });
-    renderContacts();
+    await loadCategories();
+    await renderContacts();
     if (new URLSearchParams(window.location.search).get("action") === "add") openContactForm(null);
   }
 

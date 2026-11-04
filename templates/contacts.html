@@ -19,7 +19,7 @@
     <div class="container page-content">
       <div class="demo-notice mb-4" role="note">
         <span class="notice-icon" aria-hidden="true">i</span>
-        <div><strong>Server database:</strong> Changes are saved in SQLite on this server. Use fictional information until access control and HTTPS are configured.</div>
+        <div><strong>Server database:</strong> Contacts are saved in SQLite. Only the administrator can add, edit, or delete them. Use fictional information until HTTPS is configured.</div>
       </div>
 
       <section class="content-card" aria-labelledby="directoryHeading">
@@ -39,10 +39,6 @@
                 <label class="visually-hidden" for="categoryFilter">Filter by category</label>
                 <select class="form-select" id="categoryFilter">
                   <option value="">All categories</option>
-                  <option value="Family">Family</option>
-                  <option value="Friends">Friends</option>
-                  <option value="Work">Work</option>
-                  <option value="Others">Others</option>
                 </select>
               </div>
             </div>
@@ -105,10 +101,6 @@
                 <label class="form-label" for="category">Category <span class="required-mark" aria-hidden="true">*</span></label>
                 <select class="form-select" id="category" name="category" required>
                   <option value="">Choose a category</option>
-                  <option value="Family">Family</option>
-                  <option value="Friends">Friends</option>
-                  <option value="Work">Work</option>
-                  <option value="Others">Others</option>
                 </select>
                 <div class="invalid-feedback">Choose a category.</div>
               </div>

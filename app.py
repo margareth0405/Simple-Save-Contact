@@ -1,4 +1,4 @@
-"""ContactHub Flask application and SQLite-backed JSON API."""
+"""Flask pages and SQLite-backed API for ContactHub."""
 
 from __future__ import annotations
 
@@ -7,15 +7,20 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import click
-from flask import Flask, abort, g, jsonify, render_template, request, session
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash
+
+from database import get_db_connection, resolve_database_path
+from insert_sample_data import insert_sample_data
+from setup_admin import load_admin_config
+from setup_database import initialize_database
 
 
-CATEGORIES = ("Family", "Friends", "Work", "Others")
 FIELDS = ("fullName", "email", "phone", "category", "address", "notes")
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 PHONE_PATTERN = re.compile(r"^[+() 0-9-]+$")
@@ -24,20 +29,25 @@ CONTACT_ID_PATTERN = re.compile(r"^CH-(\d+)$")
 
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__, instance_relative_config=True)
+    saved_config = load_admin_config()
     production = os.environ.get("CONTACTHUB_ENV", "development").lower() == "production"
-    secret_key = os.environ.get("CONTACTHUB_SECRET_KEY")
+    secret_key = os.environ.get("CONTACTHUB_SECRET_KEY") or saved_config.get("secret_key")
+    admin_hash = os.environ.get("CONTACTHUB_ADMIN_PASSWORD_HASH") or saved_config.get("admin_password_hash")
     if production and test_config is None and (
-        not secret_key or len(secret_key) < 32 or secret_key.startswith("replace-")
+        not isinstance(secret_key, str) or len(secret_key) < 32 or
+        not isinstance(admin_hash, str) or not admin_hash.startswith(("scrypt:", "pbkdf2:"))
     ):
-        raise RuntimeError("Set a random CONTACTHUB_SECRET_KEY of at least 32 characters before starting production.")
+        raise RuntimeError("Set up a stable secret and hashed administrator password before starting production.")
 
     secure_cookie = os.environ.get("CONTACTHUB_SECURE_COOKIE")
     app.config.update(
-        DATABASE=os.environ.get("CONTACTHUB_DATABASE", str(Path(app.instance_path) / "contacthub.sqlite3")),
+        DATABASE=str(resolve_database_path()),
         SECRET_KEY=secret_key or secrets.token_hex(32),
+        ADMIN_PASSWORD_HASH=admin_hash or "",
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=production if secure_cookie is None else secure_cookie.lower() in ("1", "true", "yes"),
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
         TIME_ZONE=os.environ.get("CONTACTHUB_TIME_ZONE", "Asia/Manila"),
         TRUSTED_HOSTS=[host.strip() for host in os.environ.get("CONTACTHUB_TRUSTED_HOSTS", "").split(",") if host.strip()] or None,
         MAX_CONTENT_LENGTH=16 * 1024,
@@ -52,54 +62,27 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     def get_db() -> sqlite3.Connection:
         if "db" not in g:
-            database = Path(app.config["DATABASE"])
-            database.parent.mkdir(parents=True, exist_ok=True)
-            g.db = sqlite3.connect(database, timeout=10)
-            g.db.row_factory = sqlite3.Row
-            g.db.execute("PRAGMA busy_timeout = 10000")
-            g.db.execute("PRAGMA foreign_keys = ON")
+            g.db = get_db_connection(app.config["DATABASE"])
         return g.db
 
     @app.teardown_appcontext
     def close_db(error: BaseException | None = None) -> None:
-        database = g.pop("db", None)
-        if database is not None:
-            database.close()
-
-    def init_db() -> None:
-        get_db().execute("PRAGMA journal_mode = WAL")
-        with app.open_resource("schema.sql") as schema_file:
-            get_db().executescript(schema_file.read().decode("utf-8"))
-        get_db().commit()
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
 
     @app.cli.command("init-db")
     def init_db_command() -> None:
-        """Create the SQLite tables without removing existing data."""
-        init_db()
-        click.echo("ContactHub database initialized.")
+        """Create tables and import the original local database if present."""
+        path, migrated = initialize_database(app.config["DATABASE"])
+        click.echo(f"Database ready: {path}")
+        if migrated:
+            click.echo(f"Imported {migrated} existing contacts.")
 
     @app.cli.command("seed-demo")
     def seed_demo_command() -> None:
-        """Insert fictional sample contacts into an empty database only."""
-        init_db()
-        db = get_db()
-        if db.execute("SELECT 1 FROM contacts LIMIT 1").fetchone():
-            click.echo("Database already has contacts; sample data was not added.")
-            return
-        samples = (
-            ("Mia Santos", "mia.santos@example.com", "+63 917 555 0101", "Friends", "Quezon City", "Fictional sample contact."),
-            ("Noah Reyes", "noah.reyes@example.com", "+63 918 555 0102", "Work", "Makati City", "Fictional project teammate."),
-            ("Ava Mendoza", "ava.mendoza@example.com", "+63 919 555 0103", "Family", "Pasig City", "Fictional sample contact."),
-            ("Liam Garcia", "liam.garcia@example.com", "+63 920 555 0104", "Others", "Manila", "Fictional community contact."),
-            ("Sofia Cruz", "sofia.cruz@example.com", "+63 921 555 0105", "Work", "Taguig City", "Fictional professional contact."),
-        )
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        db.executemany(
-            "INSERT INTO contacts (full_name, email, phone, category, address, notes, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (sample + (now,) for sample in samples),
-        )
-        db.commit()
-        click.echo("Five fictional contacts added.")
+        """Add fictional contacts without duplicating existing samples."""
+        click.echo(f"Added {insert_sample_data(app.config['DATABASE'])} fictional contacts.")
 
     def csrf_token() -> str:
         if "csrf_token" not in session:
@@ -108,21 +91,31 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     app.jinja_env.globals["csrf_token"] = csrf_token
 
+    @app.context_processor
+    def template_state() -> dict:
+        return {"is_admin": bool(session.get("is_admin"))}
+
     @app.before_request
     def protect_writes() -> None:
-        if request.path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+            return
+        if request.path.startswith("/api/") and not session.get("is_admin"):
+            abort(401, description="Administrator sign-in is required.")
+        if request.path.startswith("/api/") or request.path in ("/login", "/logout"):
             expected = session.get("csrf_token", "")
-            actual = request.headers.get("X-CSRF-Token", "")
+            actual = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf_token", "")
             if not expected or not actual or not hmac.compare_digest(expected, actual):
                 abort(403, description="Invalid or missing CSRF token. Refresh the page and try again.")
 
     @app.after_request
-    def prevent_contact_caching(response):
+    def response_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
         if not request.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.errorhandler(400)
+    @app.errorhandler(401)
     @app.errorhandler(403)
     @app.errorhandler(404)
     @app.errorhandler(413)
@@ -130,6 +123,20 @@ def create_app(test_config: dict | None = None) -> Flask:
         if request.path.startswith("/api/"):
             return jsonify(error=error.description), error.code
         return error
+
+    @app.errorhandler(sqlite3.Error)
+    def database_error(error):
+        app.logger.exception("Database operation failed")
+        if request.path.startswith("/api/"):
+            return jsonify(error="Database operation failed. Check setup and try again."), 500
+        return "Database operation failed. Check setup and try again.", 500
+
+    def safe_next(value: str | None) -> str:
+        if value and value.startswith("/") and not value.startswith("//") and all(char.isprintable() and char != "\\" for char in value):
+            parsed = urlsplit(value)
+            if not parsed.scheme and not parsed.netloc:
+                return value
+        return url_for("contacts")
 
     @app.get("/")
     def dashboard():
@@ -139,16 +146,52 @@ def create_app(test_config: dict | None = None) -> Flask:
     def contacts():
         return render_template("contacts.html", active_page="contacts")
 
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if session.get("is_admin"):
+            return redirect(safe_next(request.values.get("next")))
+        error = None
+        if request.method == "POST":
+            username = request.form.get("username", "")
+            password = request.form.get("password", "")
+            password_hash = app.config["ADMIN_PASSWORD_HASH"]
+            if username == "admin" and password_hash and check_password_hash(password_hash, password):
+                destination = safe_next(request.form.get("next"))
+                session.clear()
+                session["is_admin"] = True
+                session["csrf_token"] = secrets.token_urlsafe(32)
+                session.permanent = True
+                return redirect(destination)
+            error = "Invalid administrator username or password."
+        return render_template(
+            "login.html", active_page="login", error=error,
+            next_path=safe_next(request.values.get("next")),
+            admin_configured=bool(app.config["ADMIN_PASSWORD_HASH"]),
+        ), (401 if error else 200)
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("dashboard"))
+
+    def timestamp(value: str) -> str:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
+
     def row_to_contact(row: sqlite3.Row) -> dict:
         return {
             "id": f"CH-{row['id'] + 1000}",
             "fullName": row["full_name"],
             "email": row["email"],
             "phone": row["phone"],
-            "category": row["category"],
+            "category": row["category_name"],
+            "categoryId": row["category_id"],
             "address": row["address"],
             "notes": row["notes"],
-            "addedAt": row["added_at"],
+            "addedAt": timestamp(row["created_at"]),
+            "updatedAt": timestamp(row["updated_at"]),
         }
 
     def database_id(contact_id: str) -> int:
@@ -160,8 +203,11 @@ def create_app(test_config: dict | None = None) -> Flask:
             abort(404, description="Contact not found.")
         return number - 1000
 
+    CONTACT_SELECT = """SELECT contacts.*, categories.name AS category_name
+                        FROM contacts JOIN categories ON categories.id = contacts.category_id"""
+
     def contact_row(contact_id: str) -> sqlite3.Row:
-        row = get_db().execute("SELECT * FROM contacts WHERE id = ?", (database_id(contact_id),)).fetchone()
+        row = get_db().execute(CONTACT_SELECT + " WHERE contacts.id = ?", (database_id(contact_id),)).fetchone()
         if row is None:
             abort(404, description="Contact not found.")
         return row
@@ -174,11 +220,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         for field, value in values.items():
             if not isinstance(value, str):
                 errors[field] = "Must be text."
-                continue
-            values[field] = value.strip()
-
+            else:
+                values[field] = value.strip()
         name = values["fullName"]
-        if isinstance(name, str) and (not 2 <= len(name) <= 100 or any(ord(char) < 32 for char in name)):
+        if isinstance(name, str) and (not 2 <= len(name) <= 100 or any(not char.isprintable() for char in name)):
             errors["fullName"] = "Enter a name with 2 to 100 printable characters."
         email = values["email"]
         if isinstance(email, str) and (not 3 <= len(email) <= 150 or not EMAIL_PATTERN.fullmatch(email)):
@@ -189,8 +234,12 @@ def create_app(test_config: dict | None = None) -> Flask:
             if len(phone) > 30 or not PHONE_PATTERN.fullmatch(phone) or not 7 <= len(digits) <= 15:
                 errors["phone"] = "Use 7 to 15 digits with optional +, spaces, hyphens, or parentheses."
         category = values["category"]
-        if isinstance(category, str) and category not in CATEGORIES:
-            errors["category"] = "Choose Family, Friends, Work, or Others."
+        if isinstance(category, str):
+            found = get_db().execute("SELECT id FROM categories WHERE name = ?", (category,)).fetchone()
+            if not found:
+                errors["category"] = "Choose an available category."
+            else:
+                values["categoryId"] = found["id"]
         for field, maximum in (("address", 250), ("notes", 500)):
             value = values[field]
             if isinstance(value, str) and (len(value) > maximum or any(ord(char) < 32 and char not in "\n\r\t" for char in value)):
@@ -202,27 +251,32 @@ def create_app(test_config: dict | None = None) -> Flask:
             abort(400, description="Send JSON with Content-Type: application/json.")
         return validate_contact(request.get_json(silent=True))
 
+    @app.get("/api/categories")
+    def list_categories():
+        rows = get_db().execute("SELECT id, name FROM categories ORDER BY id").fetchall()
+        return jsonify(categories=[{"id": row["id"], "name": row["name"]} for row in rows])
+
     @app.get("/api/contacts")
     def list_contacts():
         search = request.args.get("search", "").strip()
         category = request.args.get("category", "").strip()
         if len(search) > 150:
             abort(400, description="Search text is too long.")
-        if category and category not in CATEGORIES:
+        if category and get_db().execute("SELECT 1 FROM categories WHERE name = ?", (category,)).fetchone() is None:
             abort(400, description="Unknown category.")
         where = []
         params = []
         if search:
             escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where.append("(full_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')")
+            where.append("(contacts.full_name LIKE ? ESCAPE '\\' OR contacts.email LIKE ? ESCAPE '\\' OR contacts.phone LIKE ? ESCAPE '\\')")
             params.extend([f"%{escaped}%"] * 3)
         if category:
-            where.append("category = ?")
+            where.append("categories.name = ?")
             params.append(category)
         clause = " WHERE " + " AND ".join(where) if where else ""
         db = get_db()
         total = db.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-        rows = db.execute("SELECT * FROM contacts" + clause + " ORDER BY added_at DESC, id DESC", params).fetchall()
+        rows = db.execute(CONTACT_SELECT + clause + " ORDER BY contacts.created_at DESC, contacts.id DESC", params).fetchall()
         return jsonify(contacts=[row_to_contact(row) for row in rows], total=total)
 
     @app.get("/api/contacts/<contact_id>")
@@ -235,13 +289,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         if errors:
             return jsonify(error="Please correct the contact fields.", fields=errors), 422
         db = get_db()
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         cursor = db.execute(
-            "INSERT INTO contacts (full_name, email, phone, category, address, notes, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (values["fullName"], values["email"], values["phone"], values["category"], values["address"], values["notes"], datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            """INSERT INTO contacts
+               (full_name, email, phone, category_id, address, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (values["fullName"], values["email"], values["phone"], values["categoryId"],
+             values["address"], values["notes"], now, now),
         )
         db.commit()
-        row = db.execute("SELECT * FROM contacts WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return jsonify(contact=row_to_contact(row)), 201
+        return jsonify(contact=row_to_contact(contact_row(f"CH-{cursor.lastrowid + 1000}"))), 201
 
     @app.put("/api/contacts/<contact_id>")
     def update_contact(contact_id: str):
@@ -250,9 +307,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         if errors:
             return jsonify(error="Please correct the contact fields.", fields=errors), 422
         db = get_db()
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         db.execute(
-            "UPDATE contacts SET full_name = ?, email = ?, phone = ?, category = ?, address = ?, notes = ? WHERE id = ?",
-            (values["fullName"], values["email"], values["phone"], values["category"], values["address"], values["notes"], row["id"]),
+            """UPDATE contacts SET full_name = ?, email = ?, phone = ?, category_id = ?,
+               address = ?, notes = ?, updated_at = ? WHERE id = ?""",
+            (values["fullName"], values["email"], values["phone"], values["categoryId"],
+             values["address"], values["notes"], now, row["id"]),
         )
         db.commit()
         return jsonify(contact=row_to_contact(contact_row(contact_id)))
@@ -265,20 +325,33 @@ def create_app(test_config: dict | None = None) -> Flask:
         db.commit()
         return "", 204
 
+    @app.get("/api/dashboard/stats")
     @app.get("/api/stats")
     def stats():
         db = get_db()
         total = db.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-        rows = db.execute("SELECT * FROM contacts ORDER BY added_at DESC, id DESC LIMIT 5").fetchall()
+        rows = db.execute(CONTACT_SELECT + " ORDER BY contacts.created_at DESC, contacts.id DESC LIMIT 5").fetchall()
+        category_rows = db.execute(
+            """SELECT categories.name, COUNT(contacts.id) AS contact_count
+               FROM categories LEFT JOIN contacts ON contacts.category_id = categories.id
+               GROUP BY categories.id ORDER BY categories.id"""
+        ).fetchall()
         today = datetime.now(app.config["CONTACT_ZONE"]).date()
         added_today = 0
-        for row in db.execute("SELECT added_at FROM contacts"):
+        for row in db.execute("SELECT created_at FROM contacts"):
             try:
-                if datetime.fromisoformat(row["added_at"]).astimezone(app.config["CONTACT_ZONE"]).date() == today:
+                created = datetime.fromisoformat(row["created_at"])
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created.astimezone(app.config["CONTACT_ZONE"]).date() == today:
                     added_today += 1
             except ValueError:
                 continue
-        return jsonify(total=total, addedToday=added_today, recent=[row_to_contact(row) for row in rows])
+        return jsonify(
+            total=total, addedToday=added_today,
+            recent=[row_to_contact(row) for row in rows],
+            categoryCounts=[{"name": row["name"], "count": row["contact_count"]} for row in category_rows],
+        )
 
     return app
 

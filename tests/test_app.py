@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 from app import create_app
+from werkzeug.security import generate_password_hash
 
 
 VALID_CONTACT = {
@@ -29,10 +30,18 @@ class ContactHubTests(unittest.TestCase):
             "TESTING": True,
             "DATABASE": self.database,
             "SECRET_KEY": "test-only-secret",
+            "ADMIN_PASSWORD_HASH": generate_password_hash("testing-password-123"),
         })
         self.client = self.app.test_client()
         result = self.app.test_cli_runner().invoke(args=["init-db"])
         self.assertEqual(result.exit_code, 0, result.output)
+        self.client.get("/login")
+        with self.client.session_transaction() as browser_session:
+            login_csrf = browser_session["csrf_token"]
+        login_result = self.client.post("/login", data={
+            "username": "admin", "password": "testing-password-123", "csrf_token": login_csrf,
+        })
+        self.assertEqual(login_result.status_code, 302)
         self.client.get("/contacts")
         with self.client.session_transaction() as browser_session:
             self.csrf = browser_session["csrf_token"]
@@ -80,11 +89,15 @@ class ContactHubTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.json)
         self.assertEqual(updated.json["contact"]["fullName"], "Renamed Person")
         self.assertEqual(updated.json["contact"]["addedAt"], contact["addedAt"])
+        self.assertNotEqual(updated.json["contact"]["updatedAt"], contact["updatedAt"])
+        with closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT categories.name FROM contacts JOIN categories ON categories.id = contacts.category_id").fetchone()[0], "Work")
 
         stats = self.client.get("/api/stats").json
         self.assertEqual(stats["total"], 1)
         self.assertEqual(stats["addedToday"], 1)
         self.assertEqual(stats["recent"][0]["category"], "Work")
+        self.assertEqual(next(item["count"] for item in stats["categoryCounts"] if item["name"] == "Work"), 1)
 
         deleted = self.write("DELETE", f"/api/contacts/{contact['id']}")
         self.assertEqual(deleted.status_code, 204)
@@ -158,7 +171,7 @@ class ContactHubTests(unittest.TestCase):
         self.assertEqual(runner.invoke(args=["seed-demo"]).exit_code, 0)
         self.assertEqual(self.client.get("/api/contacts").json["total"], 5)
         second = runner.invoke(args=["seed-demo"])
-        self.assertIn("already has contacts", second.output)
+        self.assertIn("Added 0", second.output)
         self.assertEqual(self.client.get("/api/contacts").json["total"], 5)
 
 

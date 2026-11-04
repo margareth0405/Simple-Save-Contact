@@ -9,7 +9,7 @@
           <h1 class="display-title mb-2">Good day! Here&rsquo;s your contact summary.</h1>
           <p class="hero-copy mb-0">Keep your important connections organized and easy to find.</p>
         </div>
-        <a class="btn btn-primary btn-lg action-button" href="{{ url_for('contacts', action='add') }}">
+        <a class="btn btn-primary btn-lg action-button" href="{{ url_for('contacts', action='add') if is_admin else url_for('login', next=url_for('contacts', action='add')) }}">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
           Add Contact
         </a>
@@ -19,7 +19,7 @@
     <div class="container page-content">
       <div class="demo-notice mb-4" role="note">
         <span class="notice-icon" aria-hidden="true">i</span>
-        <div><strong>Server database:</strong> Contacts are saved in SQLite on this server. Use fictional details until access control and HTTPS are configured.</div>
+        <div><strong>Server database:</strong> Contacts are saved in SQLite. Only the administrator can change them. Use fictional details until HTTPS is configured.</div>
       </div>
 
       <section aria-labelledby="statsHeading">
@@ -33,7 +33,7 @@
               <div>
                 <p class="stat-label">Total Contacts</p>
                 <p class="stat-value" id="totalContacts">0</p>
-                <a class="stat-link" href="contacts.html">View all contacts <span aria-hidden="true">&rarr;</span></a>
+                <a class="stat-link" href="{{ url_for('contacts') }}">View all contacts <span aria-hidden="true">&rarr;</span></a>
               </div>
             </article>
           </div>
@@ -50,6 +50,14 @@
             </article>
           </div>
         </div>
+      </section>
+
+      <section class="content-card mt-4" aria-labelledby="categoryHeading">
+        <div class="card-heading">
+          <p class="section-kicker mb-1">DIRECTORY BREAKDOWN</p>
+          <h2 id="categoryHeading" class="section-title mb-0">Contacts per Category</h2>
+        </div>
+        <div id="categoryStats" class="row g-3 px-4 pb-4" aria-live="polite"></div>
       </section>
 
       <section class="content-card mt-4" aria-labelledby="recentHeading">
@@ -70,7 +78,7 @@
           <div class="empty-icon" aria-hidden="true">+</div>
           <h3>No contacts yet</h3>
           <p>Add your first fictional contact to get started.</p>
-          <a class="btn btn-primary" href="{{ url_for('contacts', action='add') }}">Add Contact</a>
+          <a class="btn btn-primary" href="{{ url_for('contacts', action='add') if is_admin else url_for('login', next=url_for('contacts', action='add')) }}">Add Contact</a>
         </div>
       </section>
 

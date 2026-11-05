@@ -12,6 +12,8 @@ ContactHub uses the existing Bootstrap 5 interface with Flask and a relational S
 
 The existing dashboard, contact table, form modals, confirmation dialog, navigation, and `style.css` remain in place. Browser `localStorage` is not used for contact records.
 
+The header theme button switches between light and dark mode. The selection is saved in `localStorage` only for appearance; without a saved selection, the site follows the operating system theme. On narrow screens the contact table scrolls horizontally, while the page remains vertically scrollable. Longer desktop contact lists scroll within their table area.
+
 ## Windows 11 setup in PowerShell
 
 Run these commands in a new PowerShell window. The first path is the project's current location; adjust it if you move the folder again.
@@ -67,6 +69,30 @@ All application connections enable SQLite foreign keys. Queries use parameters f
 
 The previous `/api/stats` URL remains as a compatibility alias. Write requests require a signed-in session and the CSRF token from the page. Validation errors return HTTP 422 with field messages; unauthorized writes return HTTP 401.
 
+### Postman authentication and CRUD
+
+Use the same hostname for every request, for example `http://127.0.0.1:5000`, and keep Postman's cookie jar enabled. The website and Postman both call this Flask app, so both use the database selected by `CONTACTHUB_DATABASE`. Do not store an administrator password in a shared Postman collection.
+
+1. `GET /login`. Copy the `csrf_token` value from the hidden login form or the `<meta name="csrf-token">` tag. Keep the `session` cookie set by this response.
+2. `POST /login` with body type **x-www-form-urlencoded**: `username=admin`, `password=<your password>`, and `csrf_token=<token from step 1>`. A successful login redirects to `/contacts` and replaces the session and CSRF token.
+3. `GET /contacts`. Copy its new CSRF token. Include `X-CSRF-Token: <new token>` on every API `POST`, `PUT`, and `DELETE`; Postman must also send the authenticated `session` cookie.
+4. `GET /api/categories` lists accepted category names. `GET /api/contacts` lists contacts; `GET /api/contacts/<id>` reads one.
+5. `POST /api/contacts` with `Content-Type: application/json` and the body below returns HTTP 201. Use the returned `contact.id` for the next requests.
+6. `PUT /api/contacts/<id>` with all six JSON fields returns HTTP 200. `DELETE /api/contacts/<id>` returns HTTP 204 with no body. A later `GET` of that ID returns HTTP 404.
+
+```json
+{
+  "fullName": "Postman Test Person",
+  "email": "postman.test@example.com",
+  "phone": "+63 917 555 1234",
+  "category": "Friends",
+  "address": "Test address",
+  "notes": "Temporary CRUD test"
+}
+```
+
+The API implements full updates with `PUT`; `PATCH` is not an existing route and returns HTTP 405. HTTP 401 on an API write means the administrator session is missing. HTTP 403 means the cookie and CSRF token do not match. Refresh `/contacts` to obtain the current token. Use a temporary `CONTACTHUB_DATABASE` path for isolated Postman tests; the VS Code launch task uses the existing local database.
+
 ## Inspect `contacthub.db`
 
 Open `instance/contacthub.db` with [DB Browser for SQLite](https://sqlitebrowser.org/) and use **Database Structure** to view `categories` and `contacts`, or **Browse Data** to see saved rows. In **Execute SQL**, these read-only queries show keys and relationships:
@@ -88,6 +114,8 @@ You can also use a VS Code SQLite extension that can open a local `.db` file and
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+If Node.js is installed, also run `node --test tests/theme.test.js` to verify theme selection, persistence, and system preference behavior.
 
 The 22 automated tests use disposable SQLite files. They cover schema creation, foreign keys and restricted category deletion, legacy migration, repeatable seeding, password hashing, login and logout, CSRF, complete contact CRUD, duplicate submissions, malformed requests, database failures, validation, search, category filtering, dashboard statistics, and persistence across a new Flask app instance. They do not modify `instance/contacthub.db`.
 

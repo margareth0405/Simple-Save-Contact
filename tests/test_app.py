@@ -62,11 +62,16 @@ class ContactHubTests(unittest.TestCase):
         self.assertIn(b"Contacts | ContactHub", contacts.data)
         self.assertIn(b"/static/css/style.css", contacts.data)
         self.assertIn(b"/static/js/app.js", contacts.data)
+        self.assertIn(b"/static/js/theme.js", contacts.data)
+        self.assertIn(b'id="themeToggle"', contacts.data)
         self.assertRegex(contacts.data.decode(), r'<meta name="csrf-token" content="[^"]+">')
         self.assertNotIn(b"localStorage", contacts.data)
         asset = self.client.get("/static/js/app.js")
         self.assertEqual(asset.status_code, 200)
         asset.close()
+        theme_asset = self.client.get("/static/js/theme.js")
+        self.assertEqual(theme_asset.status_code, 200)
+        theme_asset.close()
 
     def test_create_read_update_delete_and_database_persistence(self):
         created = self.write("POST", "/api/contacts", VALID_CONTACT)

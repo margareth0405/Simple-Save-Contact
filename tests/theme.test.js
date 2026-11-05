@@ -11,11 +11,13 @@ function page({ stored = null, systemDark = false, storageUnavailable = false } 
   const buttonAttributes = {};
   const handlers = {};
   const label = { textContent: "" };
+  const iconAttributes = {};
+  const icon = { setAttribute(name, value) { iconAttributes[name] = value; } };
   let saved = stored;
   const button = {
     title: "",
     setAttribute(name, value) { buttonAttributes[name] = value; },
-    querySelector(selector) { return selector === ".theme-label" ? label : null; },
+    querySelector(selector) { return selector === ".theme-label" ? label : selector === ".theme-icon-path" ? icon : null; },
     addEventListener(name, handler) { handlers[name] = handler; },
   };
   const colorPreference = {
@@ -42,6 +44,7 @@ function page({ stored = null, systemDark = false, storageUnavailable = false } 
     theme: () => attributes["data-bs-theme"],
     saved: () => saved,
     label: () => label.textContent,
+    iconPath: () => iconAttributes.d,
     pressed: () => buttonAttributes["aria-pressed"],
     click: () => handlers.click(),
     systemChange(dark) { colorPreference.matches = dark; handlers["system-change"](); },
@@ -54,8 +57,10 @@ test("follows system preference until a theme is selected", () => {
   assert.equal(view.theme(), "dark");
   assert.equal(view.label(), "Dark mode");
   assert.equal(view.pressed(), "true");
+  assert.match(view.iconPath(), /^M20\.5/);
   view.systemChange(false);
   assert.equal(view.theme(), "light");
+  assert.match(view.iconPath(), /^M12 8/);
 });
 
 test("toggle saves and restores the selected theme after reload", () => {

@@ -8,6 +8,7 @@ import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -56,6 +57,13 @@ def create_app(test_config: dict | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+
+    @app.template_global()
+    def versioned_static(filename: str) -> str:
+        """Change asset URLs when files change so browsers load the current styles."""
+        version = (Path(app.static_folder) / filename).stat().st_mtime_ns
+        return url_for("static", filename=filename, v=version)
+
     try:
         app.config["CONTACT_ZONE"] = ZoneInfo(app.config["TIME_ZONE"])
     except ZoneInfoNotFoundError as error:

@@ -17,7 +17,34 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
 
+    permissions:
+      id-token: write
+      contents: read
+
     steps:
+      - name: Check GitHub OIDC identity
+        shell: bash
+        run: |
+          curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+          | python3 -c '
+          import sys, json, base64
+
+          response = json.load(sys.stdin)
+          payload = response["value"].split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          print("SUBJECT:", claims.get("sub"))
+          print("AUDIENCE:", claims.get("aud"))
+          print("REPOSITORY:", claims.get("repository"))
+          print("REF:", claims.get("ref"))
+          '
+
+          echo "Stopping after identity check."
+          exit 1
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:

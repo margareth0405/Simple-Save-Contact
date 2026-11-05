@@ -42,9 +42,6 @@ jobs:
           print("REF:", claims.get("ref"))
           '
 
-          echo "Stopping after identity check."
-          exit 1
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:

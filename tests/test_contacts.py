@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-import unittest
-from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
 
+import pytest
 from werkzeug.security import generate_password_hash
 
 from app import create_app
@@ -25,112 +22,122 @@ CONTACT = {
 }
 
 
-class ContactAccessTests(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.database = str(Path(self.temp_dir.name) / "contacthub.db")
-        self.config = {
-            "TESTING": True,
-            "DATABASE": self.database,
-            "SECRET_KEY": "stable-test-secret-key-for-restarts",
-            "ADMIN_PASSWORD_HASH": generate_password_hash("strong-test-password"),
-        }
-        initialize_database(self.database)
-        self.app = create_app(self.config)
-        self.client = self.app.test_client()
+@pytest.fixture
+def access(tmp_path):
+    database = str(tmp_path / "contacthub.db")
+    config = {
+        "TESTING": True,
+        "DATABASE": database,
+        "SECRET_KEY": "stable-test-secret-key-for-restarts",
+        "ADMIN_PASSWORD_HASH": generate_password_hash("strong-test-password"),
+    }
+    initialize_database(database)
+    app = create_app(config)
+    client = app.test_client()
 
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def csrf(self, client=None):
-        client = client or self.client
-        client.get("/login")
-        with client.session_transaction() as browser_session:
+    def csrf(selected_client=None):
+        selected_client = selected_client or client
+        selected_client.get("/login")
+        with selected_client.session_transaction() as browser_session:
             return browser_session["csrf_token"]
 
-    def login(self, client=None):
-        client = client or self.client
-        return client.post("/login", data={
-            "username": "admin", "password": "strong-test-password", "csrf_token": self.csrf(client),
+    def login(selected_client=None):
+        selected_client = selected_client or client
+        return selected_client.post("/login", data={
+            "username": "admin",
+            "password": "strong-test-password",
+            "csrf_token": csrf(selected_client),
         })
 
-    def test_anonymous_reads_and_write_protection(self):
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.get("/contacts").status_code, 200)
-        self.assertEqual(self.client.get("/api/contacts").status_code, 200)
-        categories = self.client.get("/api/categories").json["categories"]
-        self.assertEqual([item["name"] for item in categories], ["Family", "Friends", "Work", "Others"])
-        self.assertEqual(self.client.post("/api/contacts", json=CONTACT).status_code, 401)
-        self.assertEqual(self.client.put("/api/contacts/CH-1001", json=CONTACT).status_code, 401)
-        self.assertEqual(self.client.delete("/api/contacts/CH-1001").status_code, 401)
-
-    def test_login_logout_and_csrf(self):
-        token = self.csrf()
-        self.assertEqual(self.client.post("/login", data={"username": "admin", "password": "wrong"}).status_code, 403)
-        wrong = self.client.post("/login", data={
-            "username": "admin", "password": "wrong", "csrf_token": token,
-        })
-        self.assertEqual(wrong.status_code, 401)
-        self.assertIn(b"Invalid administrator", wrong.data)
-        signed_in = self.login()
-        self.assertEqual(signed_in.status_code, 302)
-        self.assertIn(b"Sign out", self.client.get("/contacts").data)
-        token = self.csrf()
-        self.assertEqual(self.client.post("/api/contacts", json=CONTACT).status_code, 403)
-        created = self.client.post("/api/contacts", json=CONTACT, headers={"X-CSRF-Token": token})
-        self.assertEqual(created.status_code, 201)
-        self.assertEqual(self.client.post("/logout").status_code, 403)
-        self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 302)
-        self.assertEqual(self.client.delete(f"/api/contacts/{created.json['contact']['id']}").status_code, 401)
-
-    def test_records_and_stats_survive_new_app_instance(self):
-        self.assertEqual(self.login().status_code, 302)
-        token = self.csrf()
-        created = self.client.post("/api/contacts", json=CONTACT, headers={"X-CSRF-Token": token})
-        contact_id = created.json["contact"]["id"]
-        first_stats = self.client.get("/api/dashboard/stats").json
-        self.assertEqual(first_stats["total"], 1)
-        self.assertEqual(first_stats["addedToday"], 1)
-        self.assertEqual(next(item["count"] for item in first_stats["categoryCounts"] if item["name"] == "Family"), 1)
-
-        restarted = create_app(self.config)
-        second_client = restarted.test_client()
-        fetched = second_client.get(f"/api/contacts/{contact_id}")
-        self.assertEqual(fetched.status_code, 200)
-        self.assertEqual(fetched.json["contact"]["fullName"], CONTACT["fullName"])
-        self.assertEqual(second_client.get("/api/dashboard/stats").json["total"], 1)
-
-    def test_login_redirect_stays_on_this_site(self):
-        self.csrf()
-        response = self.client.post("/login", data={
-            "username": "admin", "password": "strong-test-password",
-            "csrf_token": self.csrf(), "next": "//example.com/steal",
-        })
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers["Location"], "/contacts")
-
-    def test_generated_admin_config_is_used_by_flask(self):
-        config_path = Path(self.temp_dir.name) / "admin_config.json"
-        save_admin_password("configured-test-password", config_path)
-        with patch.dict(os.environ, {"CONTACTHUB_ADMIN_CONFIG": str(config_path)}):
-            configured_app = create_app({"TESTING": True, "DATABASE": self.database})
-        browser = configured_app.test_client()
-        browser.get("/login")
-        with browser.session_transaction() as browser_session:
-            token = browser_session["csrf_token"]
-        response = browser.post("/login", data={
-            "username": "admin", "password": "configured-test-password", "csrf_token": token,
-        })
-        self.assertEqual(response.status_code, 302)
-
-    def test_production_configuration_disables_debug_and_secures_session_cookie(self):
-        with patch.dict(os.environ, {"CONTACTHUB_ENV": "production", "CONTACTHUB_SECURE_COOKIE": "true"}):
-            production_app = create_app(self.config)
-        self.assertFalse(production_app.debug)
-        self.assertTrue(production_app.config["SESSION_COOKIE_HTTPONLY"])
-        self.assertTrue(production_app.config["SESSION_COOKIE_SECURE"])
-        self.assertEqual(production_app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+    return SimpleNamespace(
+        app=app, client=client, config=config, database=database, csrf=csrf, login=login
+    )
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_anonymous_reads_and_write_protection(access):
+    assert access.client.get("/").status_code == 200
+    assert access.client.get("/contacts").status_code == 200
+    assert access.client.get("/api/contacts").status_code == 200
+    categories = access.client.get("/api/categories").json["categories"]
+    assert [item["name"] for item in categories] == ["Family", "Friends", "Work", "Others"]
+    assert access.client.post("/api/contacts", json=CONTACT).status_code == 401
+    assert access.client.put("/api/contacts/CH-1001", json=CONTACT).status_code == 401
+    assert access.client.delete("/api/contacts/CH-1001").status_code == 401
+
+
+def test_login_logout_and_csrf(access):
+    token = access.csrf()
+    assert access.client.post("/login", data={"username": "admin", "password": "wrong"}).status_code == 403
+    wrong = access.client.post("/login", data={
+        "username": "admin", "password": "wrong", "csrf_token": token,
+    })
+    assert wrong.status_code == 401
+    assert b"Invalid administrator" in wrong.data
+    assert access.login().status_code == 302
+    assert b"Sign out" in access.client.get("/contacts").data
+    token = access.csrf()
+    assert access.client.post("/api/contacts", json=CONTACT).status_code == 403
+    created = access.client.post(
+        "/api/contacts", json=CONTACT, headers={"X-CSRF-Token": token}
+    )
+    assert created.status_code == 201
+    assert access.client.post("/logout").status_code == 403
+    assert access.client.post("/logout", data={"csrf_token": token}).status_code == 302
+    assert access.client.delete(f"/api/contacts/{created.json['contact']['id']}").status_code == 401
+
+
+def test_records_and_stats_survive_new_app_instance(access):
+    assert access.login().status_code == 302
+    token = access.csrf()
+    created = access.client.post(
+        "/api/contacts", json=CONTACT, headers={"X-CSRF-Token": token}
+    )
+    contact_id = created.json["contact"]["id"]
+    first_stats = access.client.get("/api/dashboard/stats").json
+    assert first_stats["total"] == 1
+    assert first_stats["addedToday"] == 1
+    assert next(
+        item["count"] for item in first_stats["categoryCounts"] if item["name"] == "Family"
+    ) == 1
+
+    second_client = create_app(access.config).test_client()
+    fetched = second_client.get(f"/api/contacts/{contact_id}")
+    assert fetched.status_code == 200
+    assert fetched.json["contact"]["fullName"] == CONTACT["fullName"]
+    assert second_client.get("/api/dashboard/stats").json["total"] == 1
+
+
+def test_login_redirect_stays_on_this_site(access):
+    response = access.client.post("/login", data={
+        "username": "admin",
+        "password": "strong-test-password",
+        "csrf_token": access.csrf(),
+        "next": "//example.com/steal",
+    })
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/contacts"
+
+
+def test_generated_admin_config_is_used_by_flask(access, tmp_path, monkeypatch):
+    config_path = tmp_path / "admin_config.json"
+    save_admin_password("configured-test-password", config_path)
+    monkeypatch.setenv("CONTACTHUB_ADMIN_CONFIG", str(config_path))
+    configured_app = create_app({"TESTING": True, "DATABASE": access.database})
+    browser = configured_app.test_client()
+    browser.get("/login")
+    with browser.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    response = browser.post("/login", data={
+        "username": "admin", "password": "configured-test-password", "csrf_token": token,
+    })
+    assert response.status_code == 302
+
+
+def test_production_configuration_disables_debug_and_secures_session_cookie(access, monkeypatch):
+    monkeypatch.setenv("CONTACTHUB_ENV", "production")
+    monkeypatch.setenv("CONTACTHUB_SECURE_COOKIE", "true")
+    production_app = create_app(access.config)
+    assert not production_app.debug
+    assert production_app.config["SESSION_COOKIE_HTTPONLY"]
+    assert production_app.config["SESSION_COOKIE_SECURE"]
+    assert production_app.config["SESSION_COOKIE_SAMESITE"] == "Lax"

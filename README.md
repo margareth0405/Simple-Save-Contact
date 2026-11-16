@@ -112,12 +112,12 @@ You can also use a VS Code SQLite extension that can open a local `.db` file and
 ## Tests
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 If Node.js is installed, also run `node --test tests/theme.test.js` to verify theme selection, persistence, and system preference behavior.
 
-The 22 automated tests use disposable SQLite files. They cover schema creation, foreign keys and restricted category deletion, legacy migration, repeatable seeding, password hashing, login and logout, CSRF, complete contact CRUD, duplicate submissions, malformed requests, database failures, validation, search, category filtering, dashboard statistics, and persistence across a new Flask app instance. They do not modify `instance/contacthub.db`.
+The 22 pytest tests use disposable SQLite files. They cover schema creation, foreign keys and restricted category deletion, legacy migration, repeatable seeding, password hashing, login and logout, CSRF, complete contact CRUD, duplicate submissions, malformed requests, database failures, validation, search, category filtering, dashboard statistics, and persistence across a new Flask app instance. They do not modify `instance/contacthub.db`.
 
 ## Troubleshooting
 

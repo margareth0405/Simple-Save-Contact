@@ -24,7 +24,7 @@ jobs:
 
     env:
       AWS_REGION: us-east-1
-      INSTANCE_ID: i-026cee16f13dfa8d5
+      INSTANCE_ID: i-01ac1b93aac6c8d59
       SSM_DOCUMENT: ContactHub-Deploy
 
     steps:
